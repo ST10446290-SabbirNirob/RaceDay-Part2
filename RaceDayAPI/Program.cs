@@ -1,162 +1,70 @@
-
+using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.OpenApi.Models;
+using RaceDayAPI.Authentication;
 using RaceDayAPI.Data;
 using RaceDayAPI.Models;
-
-// ============================================================
-// RACEDAY API - PROGRAM.CS
-// ============================================================
-// This file starts our RaceDay API and configures:
-// 1. API Controllers
-// 2. Swagger
-// 3. SQL Server and Entity Framework Core
-// 4. Secure password hashing
-// 5. User login sessions
-// 6. HTTP request handling
-// ============================================================
-
-
-// ============================================================
-// STEP 1 - CREATE APPLICATION BUILDER
-// ============================================================
+using RaceDayAPI.Security;
+using RaceDayAPI.Swagger;
 
 var builder = WebApplication.CreateBuilder(args);
 
-
-// ============================================================
-// STEP 2 - REGISTER API CONTROLLERS
-// ============================================================
-
+// API controllers + Swagger browser testing.
 builder.Services.AddControllers();
-
-
-// ============================================================
-// STEP 3 - CONFIGURE SWAGGER
-// ============================================================
-
 builder.Services.AddEndpointsApiExplorer();
-builder.Services.AddSwaggerGen();
-
-
-// ============================================================
-// STEP 4 - GET DATABASE CONNECTION STRING
-// ============================================================
-
-var connectionString = builder.Configuration
-    .GetConnectionString("RaceDayConnection");
-
-if (string.IsNullOrWhiteSpace(connectionString))
+builder.Services.AddSwaggerGen(options =>
 {
-    throw new InvalidOperationException(
-        "RaceDayConnection was not found in appsettings.json.");
-}
-
-
-// ============================================================
-// STEP 5 - CONFIGURE ENTITY FRAMEWORK CORE
-// ============================================================
-
-builder.Services.AddDbContext<RaceDayDbContext>(options =>
-{
-    options.UseSqlServer(connectionString);
+    options.SwaggerDoc("v1", new OpenApiInfo
+    {
+        Title = "RaceDay API",
+        Version = "v1",
+        Description = "RaceDay event management API. Organiser and Participant role permissions."
+    });
+    options.OperationFilter<RaceDayHeaderOperationFilter>();
+    options.OperationFilter<RaceDayDescriptionOperationFilter>();
 });
 
+// EF Core: use the ORIGINAL RaceDay database. This doesn't run migrations.
+string connectionString = builder.Configuration.GetConnectionString("RaceDayConnection")
+    ?? throw new InvalidOperationException("Missing ConnectionStrings:RaceDayConnection.");
+builder.Services.AddDbContext<RaceDayDbContext>(options => options.UseSqlServer(connectionString));
 
-// ============================================================
-// STEP 6 - CONFIGURE PASSWORD HASHING
-// ============================================================
+// Passwords are securely hashed with ASP.NET Core's built-in Identity hasher.
+builder.Services.AddScoped<IPasswordHasher<User>, PasswordHasher<User>>();
 
-// PasswordHasher securely hashes passwords before we save
-// them to SQL Server.
-//
-// It also verifies passwords when someone logs in.
-//
-// We do not store plain-text passwords.
-
-builder.Services.AddScoped<
-    IPasswordHasher<User>,
-    PasswordHasher<User>>();
-
-
-// ============================================================
-// STEP 7 - CONFIGURE SESSION SERVICES
-// ============================================================
-
-// Sessions need a cache to store session information.
-// This uses memory while the application is running.
-
+// Server-side session; the browser only holds a session ID cookie.
 builder.Services.AddDistributedMemoryCache();
-
-// Configure login sessions.
-
 builder.Services.AddSession(options =>
 {
-    // End the session after 30 minutes of inactivity.
     options.IdleTimeout = TimeSpan.FromMinutes(30);
-
-    // JavaScript cannot read the session cookie.
-    options.Cookie.HttpOnly = true;
-
-    // Only send the session cookie over HTTPS.
-    options.Cookie.SecurePolicy =
-        CookieSecurePolicy.Always;
-
-    // Helps reduce some cross-site request risks.
-    options.Cookie.SameSite =
-        SameSiteMode.Lax;
-
-    // Allow the session cookie to be used by the API.
-    options.Cookie.IsEssential = true;
-
-    // Give our session cookie a clear name.
     options.Cookie.Name = ".RaceDay.Session";
+    options.Cookie.HttpOnly = true;
+    options.Cookie.SecurePolicy = CookieSecurePolicy.Always;
+    options.Cookie.SameSite = SameSiteMode.Strict;
+    options.Cookie.IsEssential = true;
 });
 
-
-// ============================================================
-// STEP 8 - BUILD THE APPLICATION
-// ============================================================
+// Custom authentication reads the session and verifies the current database role.
+builder.Services.AddAuthentication("RaceDaySession")
+    .AddScheme<AuthenticationSchemeOptions, SessionAuthenticationHandler>(
+        "RaceDaySession", _ => { });
+builder.Services.AddAuthorization();
 
 var app = builder.Build();
-
-
-// ============================================================
-// STEP 9 - ENABLE SWAGGER
-// ============================================================
-
 if (app.Environment.IsDevelopment())
 {
     app.UseSwagger();
     app.UseSwaggerUI();
 }
-
-
-// ============================================================
-// STEP 10 - CONFIGURE HTTP PIPELINE
-// ============================================================
-
-// Redirect HTTP requests to HTTPS.
 app.UseHttpsRedirection();
-
-// Enable routing.
 app.UseRouting();
-
-// Enable session support.
-//
-// This must run before controllers access HttpContext.Session.
-app.UseSession();
-
-// Authorization policies and authentication checks
-// will be configured as we add protected endpoints.
+app.UseSession();      // session data must exist before the authentication handler
+app.UseAuthentication();
+app.UseMiddleware<SessionRequestProtectionMiddleware>();
 app.UseAuthorization();
-
-// Map API Controllers.
 app.MapControllers();
-
-
-// ============================================================
-// STEP 11 - RUN THE RACEDAY API
-// ============================================================
-
 app.Run();
+
+// Required by the WebApplicationFactory integration tests.
+public partial class Program { }
